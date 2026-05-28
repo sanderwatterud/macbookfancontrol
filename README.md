@@ -28,7 +28,7 @@ mbpfan python3 dbus-x11 gir1.2-ayatanaappindicator3-0.1
 ## Install
 
 ```bash
-git clone https://github.com/swatterud/macbookfancontrol.git
+git clone https://github.com/sanderwatterud/macbookfancontrol.git
 cd macbookfancontrol
 ./install.sh
 ```
