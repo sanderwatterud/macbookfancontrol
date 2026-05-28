@@ -153,6 +153,8 @@ class FanIndicator:
             ("5000 RPM", 5000),
             ("Max", self.max_rpm),
         ]
+        # Map RPM -> label for quick lookup
+        self.rpm_to_label = {rpm: label for label, rpm in self.rpm_presets}
         self.preset_items = []
         for label, rpm in self.rpm_presets:
             item = Gtk.MenuItem(label=f"  {label}")
@@ -251,10 +253,10 @@ class FanIndicator:
 
         # Highlight active preset
         for item, rpm in self.preset_items:
+            label = self.rpm_to_label.get(rpm, f"{rpm} RPM")
             if self.manual_mode and self.target_rpm == rpm:
-                item.set_label(f"> {dict(self.rpm_presets)[rpm]}")
+                item.set_label(f"> {label}")
             else:
-                label = dict(self.rpm_presets)[rpm]
                 item.set_label(f"  {label}")
 
         return True  # keep the timeout running
