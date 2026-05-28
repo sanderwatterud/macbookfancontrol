@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mbpfan-tui — Terminal UI for MacBook fan control on Linux."""
+"""macbookfancontrol — Terminal UI for MacBook fan control on Linux."""
 
 import curses
 import os
@@ -274,7 +274,7 @@ class FanTUI:
         conf = read_mbpfan_conf()
 
         # ── Header ──
-        header = " mbpfan-tui — MacBook Fan Control "
+        header = " macbookfancontrol — MacBook Fan Control "
         safe_addstr(self.stdscr, 0, 0, header.center(w), curses.color_pair(5) | curses.A_BOLD)
 
         y = 2

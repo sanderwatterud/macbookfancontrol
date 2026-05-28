@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mbpfan-menubar — System tray indicator for MacBook fan control on Linux."""
+"""macbookfancontrol — System tray indicator for MacBook fan control on Linux."""
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Gdk
 from gi.repository import AyatanaAppIndicator3 as AppIndicator
 
 # ── sysfs paths ──────────────────────────────────────────────
@@ -83,6 +83,135 @@ def toggle_mbpfan(enable):
         return False
 
 
+class FanControlWindow(Gtk.Window):
+    """Persistent control window that stays open."""
+
+    def __init__(self, fan_indicator):
+        super().__init__(title="MacBook Fan Control")
+        self.fan = fan_indicator
+        self.set_default_size(260, -1)
+        self.set_resizable(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_position(Gtk.WindowPosition.NONE)
+
+        # Close to tray instead of quitting
+        self.connect("delete-event", self._on_close)
+
+        # Build UI
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        self.add(box)
+
+        # ── Info ──
+        self.lbl_fan = Gtk.Label(label="Fan: -- RPM")
+        self.lbl_fan.set_xalign(0)
+        box.pack_start(self.lbl_fan, False, False, 0)
+
+        self.lbl_cpu = Gtk.Label(label="CPU: --C")
+        self.lbl_cpu.set_xalign(0)
+        box.pack_start(self.lbl_cpu, False, False, 0)
+
+        self.lbl_mode = Gtk.Label(label="Mode: AUTO")
+        self.lbl_mode.set_xalign(0)
+        box.pack_start(self.lbl_mode, False, False, 0)
+
+        box.pack_start(Gtk.Separator(), False, False, 4)
+
+        # ── Mode buttons ──
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.btn_auto = Gtk.Button(label="Auto")
+        self.btn_auto.connect("clicked", self._on_auto)
+        btn_box.pack_start(self.btn_auto, True, True, 0)
+
+        self.btn_manual = Gtk.Button(label="Manual")
+        self.btn_manual.connect("clicked", self._on_manual)
+        btn_box.pack_start(self.btn_manual, True, True, 0)
+
+        box.pack_start(btn_box, False, False, 0)
+
+        box.pack_start(Gtk.Separator(), False, False, 4)
+
+        # ── RPM slider ──
+        self.lbl_target = Gtk.Label(label="Target: -- RPM")
+        self.lbl_target.set_xalign(0)
+        box.pack_start(self.lbl_target, False, False, 0)
+
+        self.rpm_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 1299, 6199, 100
+        )
+        self.rpm_scale.set_draw_value(False)
+        self.rpm_scale.connect("value-changed", self._on_scale_changed)
+        self.rpm_scale.set_sensitive(False)
+        box.pack_start(self.rpm_scale, False, False, 0)
+
+        # ── Quick presets ──
+        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        for label, rpm in [("Min", 1299), ("2k", 2000), ("3k", 3000),
+                           ("4k", 4000), ("5k", 5000), ("Max", 6199)]:
+            btn = Gtk.Button(label=label)
+            btn.connect("clicked", lambda w, r=rpm: self._on_preset(r))
+            preset_box.pack_start(btn, True, True, 0)
+        box.pack_start(preset_box, False, False, 0)
+
+        self.show_all()
+
+    def _on_close(self, _widget, _event):
+        """Hide to tray instead of quitting."""
+        self.hide()
+        return True  # prevent default destruction
+
+    def _on_auto(self, _):
+        self.fan.set_auto()
+
+    def _on_manual(self, _):
+        self.fan.set_manual()
+
+    def _on_scale_changed(self, scale):
+        rpm = int(scale.get_value())
+        self.fan.set_rpm(rpm)
+
+    def _on_preset(self, rpm):
+        self.fan.set_rpm(rpm)
+        self.rpm_scale.set_value(rpm)
+
+    def update(self, current_rpm, cpu_temp, manual_mode, target_rpm, mbpfan_on, min_rpm, max_rpm):
+        rpm_str = f"{current_rpm}" if current_rpm is not None else "--"
+        self.lbl_fan.set_text(f"Fan: {rpm_str} RPM")
+
+        if cpu_temp is not None:
+            self.lbl_cpu.set_text(f"CPU: {cpu_temp:.0f}C")
+        else:
+            self.lbl_cpu.set_text("CPU: --C")
+
+        mode = "MANUAL" if manual_mode else "AUTO"
+        mbpfan_str = " (mbpfan)" if mbpfan_on else ""
+        self.lbl_mode.set_text(f"Mode: {mode}{mbpfan_str}")
+
+        # Update slider
+        self.rpm_scale.set_range(min_rpm, max_rpm)
+        self.rpm_scale.set_sensitive(manual_mode)
+        if manual_mode:
+            # Block signal to avoid feedback loop
+            self.rpm_scale.handler_block_by_func(self._on_scale_changed)
+            self.rpm_scale.set_value(target_rpm)
+            self.rpm_scale.handler_unblock_by_func(self._on_scale_changed)
+            self.lbl_target.set_text(f"Target: {target_rpm} RPM")
+        else:
+            self.lbl_target.set_text("Target: --")
+
+        # Highlight active mode button
+        if manual_mode:
+            self.btn_manual.get_style_context().add_class("suggested-action")
+            self.btn_auto.get_style_context().remove_class("suggested-action")
+        else:
+            self.btn_auto.get_style_context().add_class("suggested-action")
+            self.btn_manual.get_style_context().remove_class("suggested-action")
+
+
 class FanIndicator:
     def __init__(self):
         self.min_rpm = read_int(FAN_MIN) or 1299
@@ -100,84 +229,44 @@ class FanIndicator:
 
         # Create indicator
         self.indicator = AppIndicator.Indicator.new(
-            "mbpfan-indicator",
+            "macbookfancontrol",
             "fan",
             AppIndicator.IndicatorCategory.HARDWARE
         )
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title("MacBook Fan Control")
 
-        # Build menu
+        # Build tray menu (minimal — just show/hide window and quit)
         self.menu = Gtk.Menu()
         self._build_menu()
         self.indicator.set_menu(self.menu)
+
+        # Create control window
+        self.window = FanControlWindow(self)
 
         # Start update loop
         GLib.timeout_add(2000, self._update)
 
     def _build_menu(self):
-        # ── Info section ──
-        self.item_fan = Gtk.MenuItem(label="Fan: -- RPM")
-        self.item_fan.set_sensitive(False)
-        self.menu.append(self.item_fan)
+        item_show = Gtk.MenuItem(label="Show Controls")
+        item_show.connect("activate", lambda _: self.window.show())
+        self.menu.append(item_show)
 
-        self.item_cpu = Gtk.MenuItem(label="CPU: --C")
-        self.item_cpu.set_sensitive(False)
-        self.menu.append(self.item_cpu)
-
-        self.item_mode = Gtk.MenuItem(label="Mode: AUTO")
-        self.item_mode.set_sensitive(False)
-        self.menu.append(self.item_mode)
-
-        # Separator
-        self.menu.append(Gtk.SeparatorMenuItem())
-
-        # ── Mode toggle ──
-        self.item_auto = Gtk.MenuItem(label="Switch to Auto")
-        self.item_auto.connect("activate", self._on_auto)
-        self.menu.append(self.item_auto)
-
-        self.item_manual = Gtk.MenuItem(label="Switch to Manual")
-        self.item_manual.connect("activate", self._on_manual)
-        self.menu.append(self.item_manual)
-
-        # Separator
-        self.menu.append(Gtk.SeparatorMenuItem())
-
-        # ── RPM presets ──
-        self.rpm_presets = [
-            ("Min", self.min_rpm),
-            ("2000 RPM", 2000),
-            ("3000 RPM", 3000),
-            ("4000 RPM", 4000),
-            ("5000 RPM", 5000),
-            ("Max", self.max_rpm),
-        ]
-        # Map RPM -> label for quick lookup
-        self.rpm_to_label = {rpm: label for label, rpm in self.rpm_presets}
-        self.preset_items = []
-        for label, rpm in self.rpm_presets:
-            item = Gtk.MenuItem(label=f"  {label}")
-            item.connect("activate", lambda w, r=rpm: self._on_set_rpm(r))
-            self.menu.append(item)
-            self.preset_items.append((item, rpm))
-
-        # Separator
-        self.menu.append(Gtk.SeparatorMenuItem())
-
-        # ── Open TUI ──
         item_tui = Gtk.MenuItem(label="Open TUI")
         item_tui.connect("activate", self._on_open_tui)
         self.menu.append(item_tui)
 
-        # ── Quit ──
+        self.menu.append(Gtk.SeparatorMenuItem())
+
         item_quit = Gtk.MenuItem(label="Quit")
         item_quit.connect("activate", self._on_quit)
         self.menu.append(item_quit)
 
         self.menu.show_all()
 
-    def _on_auto(self, _):
+    # ── Public methods for FanControlWindow ──
+
+    def set_auto(self):
         if self.manual_mode:
             write_int(FAN_MANUAL, 0)
             self.manual_mode = False
@@ -185,7 +274,7 @@ class FanIndicator:
                 toggle_mbpfan(True)
                 self.we_stopped_mbpfan = False
 
-    def _on_manual(self, _):
+    def set_manual(self):
         if not self.manual_mode:
             if is_mbpfan_active():
                 toggle_mbpfan(False)
@@ -198,13 +287,15 @@ class FanIndicator:
                 self.target_rpm = read_int(FAN_INPUT) or self.min_rpm
                 write_int(FAN_OUTPUT, self.target_rpm)
 
-    def _on_set_rpm(self, rpm):
+    def set_rpm(self, rpm):
         rpm = max(self.min_rpm, min(self.max_rpm, rpm))
         if not self.manual_mode:
-            self._on_manual(None)
+            self.set_manual()
         ok = write_int(FAN_OUTPUT, rpm)
         if ok:
             self.target_rpm = rpm
+
+    # ── Menu callbacks ──
 
     def _on_open_tui(self, _):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -223,43 +314,29 @@ class FanIndicator:
             toggle_mbpfan(True)
             self.we_stopped_mbpfan = False
 
+    # ── Update loop ──
+
     def _update(self):
         current_rpm = read_int(FAN_INPUT)
         temps = read_temps()
         mbpfan_on = is_mbpfan_active()
 
-        # Find CPU temp
         cpu_temp = None
         for label, temp in temps:
             if label == "x86_pkg_temp":
                 cpu_temp = temp
                 break
 
-        # Update info items
         rpm_str = f"{current_rpm}" if current_rpm is not None else "--"
-        self.item_fan.set_label(f"Fan: {rpm_str} RPM")
-
-        if cpu_temp is not None:
-            self.item_cpu.set_label(f"CPU: {cpu_temp:.0f}C")
-        else:
-            self.item_cpu.set_label("CPU: --C")
-
-        mode = "MANUAL" if self.manual_mode else "AUTO"
-        mbpfan_str = " (mbpfan)" if mbpfan_on else ""
-        self.item_mode.set_label(f"Mode: {mode}{mbpfan_str}")
-
-        # Update indicator label (short text in panel)
         self.indicator.set_label(f"{rpm_str}", "")
 
-        # Highlight active preset
-        for item, rpm in self.preset_items:
-            label = self.rpm_to_label.get(rpm, f"{rpm} RPM")
-            if self.manual_mode and self.target_rpm == rpm:
-                item.set_label(f"> {label}")
-            else:
-                item.set_label(f"  {label}")
+        # Update control window
+        self.window.update(
+            current_rpm, cpu_temp, self.manual_mode,
+            self.target_rpm, mbpfan_on, self.min_rpm, self.max_rpm
+        )
 
-        return True  # keep the timeout running
+        return True
 
 
 def main():
@@ -267,10 +344,11 @@ def main():
         print("Error: applesmc not found — is this a Mac?", file=sys.stderr)
         sys.exit(1)
 
-    # Handle SIGINT gracefully
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     indicator = FanIndicator()
+    # Show window on startup
+    indicator.window.show()
     Gtk.main()
 
 
